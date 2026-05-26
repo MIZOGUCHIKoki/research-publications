@@ -1,0 +1,9 @@
+services:
+  tamarin:
+    platform: linux/amd64
+    build: .
+    container_name: tamarin
+    tty: true
+    stdin_open: true
+    volumes:
+      - .:/home/tamarin
