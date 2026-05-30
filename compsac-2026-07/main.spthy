@@ -1,0 +1,200 @@
+theory ProposedAKE
+begin
+builtins: hashing, xor
+functions:
+  PUF/2
+rule Enroll:
+let
+  CRP_1_2 = PUF(~c1, ~seed) ⊕ PUF(~c2, ~seed)
+  CRP_2_3 = PUF(~c2, ~seed) ⊕ PUF(~c3, ~seed)
+in
+[
+  Fr(~id), Fr(~seed), Fr(~c1), Fr(~c2), Fr(~c3)     
+]
+  --[Enroll(~id, ~seed, ~c1, ~c2, ~c3)]->
+[
+  !ClientSecret(~id, ~seed),
+  ServerDB(~id, ~c1, ~c2, ~c3, CRP_1_2, CRP_2_3),
+  AgreeOnChallenge(~c1, ~c2, ~c3)
+]
+
+restriction UniquenessEnrollment:
+  "
+    All id seed seed2 ca cb cc c1 c2 c3 #i #j.
+      Enroll(id, seed, ca, cb, cc) @i & Enroll(id, seed2, c1, c2, c3) @j
+      ==> #i = #j
+  "
+
+rule Client_Hello:
+  [
+    !ClientSecret(id, seed),
+    AgreeOnChallenge(c1, c2, c3)
+  ]
+  --[Client_Hello(id, seed)]->
+  [
+    Out(h(id)),
+    ClientWait(id, seed, c1, c2, c3)
+  ]
+
+rule Server_Send_Challenges:
+  [
+    In(h(id)),
+    ServerDB(id, c1, c2, c3, CRP_1_2, CRP_2_3),
+    Fr(~c4)
+  ]
+  --[Server_Send_Challenges(id, c1, c2, c3, ~c4)]->
+  [
+    Out(<c1, c2, c3, ~c4, h(<CRP_1_2, c3, ~c4>)>),
+    ServerWait(id, c1, c2, c3, ~c4, CRP_1_2, CRP_2_3),
+    ServerDB(id, c1, c2, c3, CRP_1_2, CRP_2_3)
+  ]
+
+  rule Client_Verify_And_Respond:
+  let
+    CRP_1_2 = PUF(c1,seed) ⊕ PUF(c2,seed)
+    CRP_2_3 = PUF(c2,seed) ⊕ PUF(c3,seed)
+    CRP_2_4 = PUF(c2,seed) ⊕ PUF(c4,seed)
+    CRP_1_4 = PUF(c1,seed) ⊕ PUF(c4,seed)
+  in
+  [
+    ClientWait(id, seed, c1, c2, c3),
+    In(<c1, c2, c3, c4, h(<CRP_1_2, c3, c4>)>)
+  ]
+  --[
+    Client_Verify_And_Respond(id, seed, c1, c2, c3, c4),
+    ClientKey(id, h(CRP_1_4)),
+    CommitC(id, c1, c2, c3, c4)
+  ]->
+  [
+    Out(<CRP_2_4, h(<CRP_2_3, CRP_2_4>)>)
+  ]
+
+rule Server_Verify_Update_And_Key:
+  let
+    CRP_1_4 = CRP_1_2 ⊕ CRP_2_4
+    CRP_3_4 = CRP_2_3 ⊕ CRP_2_4
+  in
+  [
+    ServerWait(id, c1, c2, c3, c4, CRP_1_2, CRP_2_3),
+    In(<CRP_2_4, h(<CRP_2_3, CRP_2_4>)>),
+    ServerDB(id, c1, c2, c3, CRP_1_2, CRP_2_3)
+  ]
+  --[
+    Server_Verify_Update_And_Key(id, c1, c2, c3, c4),
+    Authenticated(id, c1, c2, c3,c4),
+    ServerKey(id, h(CRP_1_4)),
+    ServerDB(id, c2, c3, c4, CRP_2_3, CRP_3_4)
+  ]->
+  []
+
+lemma ChallengeIsUnique:
+  all-traces
+  "
+  All id seed c1 c2 c3 #currentsession.
+    Enroll(id, seed, c1, c2, c3) @currentsession
+    ==> not( c1 = c2 | c2 = c3 | c1 = c3)
+  "
+
+lemma Executable:
+  exists-trace
+  "
+    Ex id seed c1 c2 c3 c4 #i #j #k #l #m.
+      Enroll(id, seed, c1, c2, c3)                         @i
+    & Client_Hello(id, seed)                               @j
+    & Server_Send_Challenges(id, c1, c2, c3, c4)           @k
+    & Client_Verify_And_Respond(id, seed, c1, c2, c3, c4)  @l
+    & Server_Verify_Update_And_Key(id, c1, c2, c3, c4)     @m
+    & #i < #j & #j < #k & #k < #l & #l < #m
+  "
+
+lemma Client_Authentication:
+  all-traces
+  "
+    All id c1 c2 c3 c4 #i.
+      Authenticated(id, c1, c2, c3, c4) @i
+      ==>
+      Ex seed #j.
+        Client_Verify_And_Respond(id, seed, c1, c2, c3, c4) @j
+        & #j < #i
+  "
+lemma Server_Authentication:
+  all-traces
+  "
+    All id seed c1 c2 c3 c4 #i.
+      Client_Verify_And_Respond(id, seed, c1, c2, c3, c4) @i
+      ==>
+      Ex #j.
+        Server_Send_Challenges(id, c1, c2, c3, c4) @j
+        & #j < #i
+  "
+
+lemma Key_Agreement:
+  all-traces
+  "
+    All id c1 c2 c3 c4 seed k k2 #i #j.
+      Authenticated(id, c1, c2, c3, c4)@i
+    & ServerKey(id, k)@i
+    & Client_Verify_And_Respond(id, seed, c1, c2, c3, c4)@j
+    & ClientKey(id, k2)@j
+      ==> k = k2
+  "
+
+
+lemma Client_Authentication_Injective:
+  all-traces
+  " 
+    All id c1 c2 c3 c4 #i.
+      Authenticated(id, c1, c2, c3, c4) @i
+      ==>
+      ( Ex seed #j.
+          Client_Verify_And_Respond(id, seed, c1, c2, c3, c4) @j
+          & #j < #i
+          & ( All #i2. 
+                Authenticated(id, c1, c2, c3, c4) @i2
+                ==> #i = #i2 
+            )
+      )
+  "
+
+lemma Server_Authentication_Injective:
+  all-traces
+  " 
+    All id seed c1 c2 c3 c4 #i.
+      Client_Verify_And_Respond(id, seed, c1, c2, c3, c4) @i
+      ==>
+      ( Ex #j.
+          Server_Send_Challenges(id, c1, c2, c3, c4) @j
+          & #j < #i
+          & ( All seed2 #i2. 
+                Client_Verify_And_Respond(id, seed2, c1, c2, c3, c4) @i2
+                ==> #i = #i2 
+            )
+      )
+  "
+
+lemma Client_Key_Secrecy:
+  all-traces
+  "
+    All id k #i.
+      ClientKey(id, k) @i
+      ==> not(Ex #j. K(k) @j)
+  "
+lemma Server_Key_Secrecy:
+  all-traces
+  "
+    All id k #i.
+      ServerKey(id, k) @i
+      ==> not(Ex #j. K(k) @j)
+  "
+
+lemma PUF_Response_Secrecy:
+  all-traces
+  "
+    All id seed c1 c2 c3 #i.
+      Enroll(id, seed, c1, c2, c3) @i
+      ==>
+        not(Ex #j. K(PUF(c1, seed)) @j)
+      & not(Ex #j. K(PUF(c2, seed)) @j)
+      & not(Ex #j. K(PUF(c3, seed)) @j)
+  "
+end
